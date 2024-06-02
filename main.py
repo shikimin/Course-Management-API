@@ -36,7 +36,7 @@ auth0 = oauth.register(
     },
 )
 
-# databases
+# database
 USERS = "users"
 COURSES = "courses"
 ENROLLMENTS = "enrollments"
@@ -189,8 +189,12 @@ def get_user(user_id):
     user_key = client.key(USERS, user_id)
     user = client.get(key=user_key)
 
-    # valid JWT but user doesn't exist
-    if not user or payload["sub"] != user["sub"]:
+    query = client.query(kind=USERS)    
+    query.add_filter(filter=PropertyFilter('sub', '=', payload["sub"]))
+    check_role = list(query.fetch())
+    
+    # invalid JWT or admin JWT but user doesn't exist
+    if not user or (payload["sub"] != user["sub"] and check_role[0]["role"] != "admin"):
         return ({"Error": error[403]}, 403)
     
     # add "courses" property to output
@@ -202,7 +206,7 @@ def get_user(user_id):
         courses_query.add_filter(filter=PropertyFilter('instructor_id', '=', user_id))
         courses = list(courses_query.fetch())
         for course in courses:
-            url = request.base_url + "/courses/" + str(course.key.id)
+            url = request.root_url + "courses/" + str(course.key.id)
             user["courses"].append(url)
     elif user["role"] == "student":
         # check classes student is enrolled in
@@ -272,7 +276,7 @@ def create_avatar(user_id):
     return ({'avatar_url': request.url}, 200)
 
 
-# Retrieve URL for user avatar
+# Retrieve user avatar
 @app.route("/" + USERS + "/<int:user_id>/avatar", methods=['GET'])
 def get_avatar(user_id):
     payload = verify_jwt(request)
@@ -421,8 +425,49 @@ def get_course(course_id):
     return (course, 200)
 
 
+# Update a specific course
+@app.route("/" + COURSES + "/<int:course_id>", methods=["PATCH"])
+def update_course(course_id):
+    payload = verify_jwt(request)
+    if payload == 401:
+        return ({"Error": error[401]}, 401)
+
+    query = client.query(kind=USERS)    
+    query.add_filter(filter=PropertyFilter('sub', '=', payload["sub"]))
+    check_role = list(query.fetch())
+    
+    course_key = client.key(COURSES, course_id)
+    course = client.get(key=course_key)
+    
+    # JWT doesn't belong to admin or invalid course id
+    if check_role[0]["role"] != "admin" or not course:
+        return ({"Error": error[403]}, 403)
+
+    query = client.query(kind=USERS)    
+    query.add_filter(filter=PropertyFilter('role', '=', "instructor"))
+    instructors = list(query.fetch())
+    instructor_ids = []
+    
+    for instructor in instructors:
+        instructor_ids.append(instructor.key.id)
+    
+    content = request.get_json()
+    
+    if "instructor_id" in content and content["instructor_id"] not in instructor_ids:
+        return ({"Error": error[400]}, 400)
+    
+    for attribute in content:
+        course[attribute] = content[attribute]
+    
+    client.put(course)
+    
+    course['id'] = course.key.id
+    course['self'] = request.url
+
+    return (course, 200)
+
+
 # Delete a specific course
-# WIP: deletes enrollment of all students that were enrolled in the course
 @app.route("/" + COURSES + "/<int:course_id>", methods=["DELETE"])
 def delete_course(course_id):
     course_key = client.key(COURSES, course_id)
@@ -443,7 +488,7 @@ def delete_course(course_id):
     # get enrollment keys for course for deletion
     enroll_query = client.query(kind=ENROLLMENTS)    
     enroll_query.add_filter(filter=PropertyFilter('course_id', '=', course_id))
-    check_enrollments = list(enroll.query.fetch())
+    check_enrollments = list(enroll_query.fetch())
     delete_keys = [course_key]
     for enrollment in check_enrollments:
         delete_keys.append(enrollment.key)
@@ -486,12 +531,15 @@ def update_enrollment(course_id):
     for student in students:
         student_ids.append(student.key.id)
     
+    # non student id in request
+    for ids in content.values():
+        for id in ids:
+            if id not in student_ids:
+                return ({"Error": error[409]}, 409)
+        
     # action = add, remove
     for action, enroll_ids in content.items():
         for id in enroll_ids:
-            if id not in student_ids:
-                return ({"Error": error[409]}, 409)
-            
             # get enrollment entity for student and course
             query = client.query(kind=ENROLLMENTS)    
             query.add_filter(filter=PropertyFilter('course_id', '=', course_id))
@@ -508,9 +556,6 @@ def update_enrollment(course_id):
                     new_enrollment.update({"course_id": course_id, "student_id": id})
                     client.put(new_enrollment)
             elif action == "remove":
-                # if id in content["add"]:
-                #     return ({"Error": error[409]}, 409)
-                # delete enrollment if exists
                 if current_enrollment:
                     client.delete(current_enrollment[0].key)
 
@@ -534,15 +579,18 @@ def get_enrollment(course_id):
     course_key = client.key(COURSES, course_id)
     course = client.get(key=course_key)
     
-    if check_role[0]["role"] != "admin" or not course or (check_role[0]["role"] == "instructor" 
-                                                          and course["instructor_id"] != check_role[0].key.id):
+    if not course or (check_role[0]["role"] != "admin" and course["instructor_id"] != check_role[0].key.id):
         return ({"Error": error[403]}, 403)
     
     query = client.query(kind=ENROLLMENTS)    
     query.add_filter(filter=PropertyFilter('course_id', '=', course_id))
     students = list(query.fetch())
-
-    return (students, 200)
+    enrolled_students = []
+    
+    for student in students:
+        enrolled_students.append(student["student_id"])
+        
+    return (enrolled_students, 200)
 
 if __name__ == '__main__':
     app.run(host='127.0.0.1', port=8080, debug=True)
