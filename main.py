@@ -188,6 +188,10 @@ def get_user(user_id):
 
     user_key = client.key(USERS, user_id)
     user = client.get(key=user_key)
+
+    # valid JWT but user doesn't exist
+    if not user or payload["sub"] != user["sub"]:
+        return ({"Error": error[403]}, 403)
     
     # add "courses" property to output
     if user["role"] != "admin":
@@ -205,8 +209,8 @@ def get_user(user_id):
         enroll_query = client.query(kind=ENROLLMENTS)    
         enroll_query.add_filter(filter=PropertyFilter('student_id', '=', user_id))
         enrollments = list(enroll_query.fetch())
-        for enroll in enrollments:
-            url = request.root_url + "courses/" + str(enroll["course_id"])
+        for enrollment in enrollments:
+            url = request.root_url + "courses/" + str(enrollment["course_id"])
             user["courses"].append(url)
     
     # check avatar
@@ -234,12 +238,9 @@ def create_avatar(user_id):
         return ({"Error": error[401]}, 401)
     
     # valid JWT but does not belong to user in path parameter
-    query = client.query(kind=USERS)
-    query.add_filter(filter=PropertyFilter('sub', '=', payload["sub"]))
-    payload_jwt = list(query.fetch())
     user_key = client.key(USERS, user_id)
     user = client.get(key=user_key)
-    if payload_jwt[0]["sub"] != user["sub"]:
+    if payload["sub"] != user["sub"]:
         return ({"Error": error[403]}, 403)
     
     # Set file_obj to the file sent in the request
@@ -255,8 +256,15 @@ def create_avatar(user_id):
     # Upload the file into Cloud Storage
     blob.upload_from_file(file_obj)
     
-    # create Avatar entity, map filename to user_id
-    avatar = datastore.Entity(key=client.key(AVATARS))
+    # create/update Avatar entity, map filename to user_id
+    avatar_query = client.query(kind=AVATARS) 
+    avatar_query.add_filter(filter=PropertyFilter('user_id', '=', user_id))
+    curr_avatar = list(avatar_query.fetch())
+    print(curr_avatar)
+    if not curr_avatar:
+        avatar = datastore.Entity(key=client.key(AVATARS))
+    else:
+        avatar = client.get(key=curr_avatar[0].key)
     avatar_content = {"filename": file_obj.filename, "user_id": user_id}
     avatar.update(avatar_content)
     client.put(avatar)
@@ -272,12 +280,9 @@ def get_avatar(user_id):
         return ({"Error": error[401]}, 401)
     
     # valid JWT but does not belong to user in path parameter
-    query = client.query(kind=USERS)
-    query.add_filter(filter=PropertyFilter('sub', '=', payload["sub"]))
-    payload_jwt = list(query.fetch())
     user_key = client.key(USERS, user_id)
     user = client.get(key=user_key)
-    if payload_jwt[0]["sub"] != user["sub"]:
+    if payload["sub"] != user["sub"]:
         return ({"Error": error[403]}, 403)
     
     # user does not have avatar
@@ -310,12 +315,9 @@ def delete_avatar(user_id):
         return ({"Error": error[401]}, 401)
     
     # valid JWT but does not belong to user in path parameter
-    query = client.query(kind=USERS)
-    query.add_filter(filter=PropertyFilter('sub', '=', payload["sub"]))
-    payload_jwt = list(query.fetch())
     user_key = client.key(USERS, user_id)
     user = client.get(key=user_key)
-    if payload_jwt[0]["sub"] != user["sub"]:
+    if payload["sub"] != user["sub"]:
         return ({"Error": error[403]}, 403)
     
     # user does not have avatar
@@ -430,15 +432,24 @@ def delete_course(course_id):
     if payload == 401:
         return ({"Error": error[401]}, 401)
 
-    query = client.query(kind=USERS)    
-    query.add_filter(filter=PropertyFilter('sub', '=', payload["sub"]))
-    check_role = list(query.fetch())
+    user_query = client.query(kind=USERS)    
+    user_query.add_filter(filter=PropertyFilter('sub', '=', payload["sub"]))
+    check_role = list(user_query.fetch())
     
-    # JWT doesn't belong to admin
+    # JWT doesn't belong to admin or course doesn't exist
     if check_role[0]["role"] != "admin" or not course:
         return ({"Error": error[403]}, 403)
-
-    client.delete(course_key)
+    
+    # get enrollment keys for course for deletion
+    enroll_query = client.query(kind=ENROLLMENTS)    
+    enroll_query.add_filter(filter=PropertyFilter('course_id', '=', course_id))
+    check_enrollments = list(enroll.query.fetch())
+    delete_keys = [course_key]
+    for enrollment in check_enrollments:
+        delete_keys.append(enrollment.key)
+    
+    client.delete_multi(delete_keys)
+    
     return ("", 204)
 
 
@@ -505,6 +516,33 @@ def update_enrollment(course_id):
 
     return ("", 200)
 
+
+# Retrieve enrollment for a course
+@app.route("/" + COURSES + "/<int:course_id>/students", methods=["GET"])
+def get_enrollment(course_id):
+    payload = verify_jwt(request)
+    if payload == 401:
+        return ({"Error": error[401]}, 401)
+    
+    
+    # for checking credentials
+    query = client.query(kind=USERS)    
+    query.add_filter(filter=PropertyFilter('sub', '=', payload["sub"]))
+    check_role = list(query.fetch())
+    
+    # for checking if course exists + valid instructor id
+    course_key = client.key(COURSES, course_id)
+    course = client.get(key=course_key)
+    
+    if check_role[0]["role"] != "admin" or not course or (check_role[0]["role"] == "instructor" 
+                                                          and course["instructor_id"] != check_role[0].key.id):
+        return ({"Error": error[403]}, 403)
+    
+    query = client.query(kind=ENROLLMENTS)    
+    query.add_filter(filter=PropertyFilter('course_id', '=', course_id))
+    students = list(query.fetch())
+
+    return (students, 200)
 
 if __name__ == '__main__':
     app.run(host='127.0.0.1', port=8080, debug=True)
