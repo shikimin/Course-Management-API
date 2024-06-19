@@ -3,6 +3,7 @@ This REST API is designed for a hypothetical lightweight course management tool 
 9 Auth0 users have been pre-created for use with this API: 1 Admin, 2 Instructors, and 6 Students. 
 Usernames are admin1@osu.com, instructor1@osu.com, student1@osu.com, and so forth. Passwords for all users is yoyo123!.
 The application is hosted on Google Cloud Platform and uses Google App Engine and Datastore.
+URL to deployed app is [here](https://shinminy-cs493-portfolio.wl.r.appspot.com/): 
 
 ## Summary of Endpoints
 
