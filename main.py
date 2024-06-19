@@ -12,7 +12,6 @@ from authlib.integrations.flask_client import OAuth
 import io
 
 app = Flask(__name__)
-# app.secret_key = 'SECRET_KEY'
 PHOTO_BUCKET='shinminy-photos'
 
 client = datastore.Client()
@@ -42,7 +41,6 @@ COURSES = "courses"
 ENROLLMENTS = "enrollments"
 AVATARS = "avatars"
 
-course_properties = ["subject", "number", "title", "term", "instructor_id"]
 error = {
     400: "The request body is invalid",
     401: "Unauthorized",
@@ -53,60 +51,11 @@ error = {
 
 # This code is adapted from https://auth0.com/docs/quickstart/backend/python/01-authorization?_ga=2.46956069.349333901.1589042886-466012638.1589042885#create-the-jwt-validation-decorator
 
-class AuthError(Exception):
-    def __init__(self, error, status_code):
-        self.error = error
-        self.status_code = status_code
-
-
-@app.errorhandler(AuthError)
-def handle_auth_error(ex):
-    response = jsonify(ex.error)
-    response.status_code = ex.status_code
-    return response
-
-def content_validation(content, code):
-    # return True if content is valid
-    if code == 400:
-        return len(content) == len(course_properties)
-    elif code == 403:
-        return True if content is not None else False
-    
-    
 @app.route('/')
 def index():
-    return "Please navigate to /lodgings to use this API"\
-    
-         
-# Generate a JWT from the Auth0 domain and return it
-# Request: JSON body with 2 properties with "username" and "password"
-#       of a user registered with this Auth0 domain
-# Response: JSON with the JWT as the value of the property id_token
-@app.route('/users/login', methods=['POST'])
-def login_user():
-    content = request.get_json()
-    if "username" not in content or "password" not in content:
-        return ({"Error": error[400]}, 400)
-    
-    username = content["username"]
-    password = content["password"]
-    body = {'grant_type':'password','username':username,
-            'password':password,
-            'client_id':CLIENT_ID,
-            'client_secret':CLIENT_SECRET
-           }
-    headers = { 'content-type': 'application/json' }
-    url = 'https://' + DOMAIN + '/oauth/token'
-    r = requests.post(url, json=body, headers=headers)
-
-    # incorrect username or password
-    if "error" in r.json():
-        return ({"Error": error[401]}, 401)
-    
-    res = {"token": r.json()["id_token"]}
-    return res, 200, {'Content-Type':'application/json'}
-
-
+    return "Please navigate to /login to use this API"
+        
+        
 # Verify the JWT in the request's Authorization header
 def verify_jwt(request):
     if 'Authorization' in request.headers:
@@ -154,12 +103,40 @@ def verify_jwt(request):
     else:
         return 401
 
-     
+         
+# Generate a JWT from the Auth0 domain and return it
+# Request: JSON body with 2 properties with "username" and "password"
+#       of a user registered with this Auth0 domain
+# Response: JSON with the JWT as the value of the property id_token
+@app.route('/users/login', methods=['POST'])
+def login_user():
+    content = request.get_json()
+    if "username" not in content or "password" not in content:
+        return ({"Error": error[400]}, 400)
+    
+    username = content["username"]
+    password = content["password"]
+    body = {'grant_type':'password','username':username,
+            'password':password,
+            'client_id':CLIENT_ID,
+            'client_secret':CLIENT_SECRET
+           }
+    headers = { 'content-type': 'application/json' }
+    url = 'https://' + DOMAIN + '/oauth/token'
+    r = requests.post(url, json=body, headers=headers)
+
+    # incorrect username or password
+    if "error" in r.json():
+        return ({"Error": error[401]}, 401)
+    
+    res = {"token": r.json()["id_token"]}
+    return res, 200, {'Content-Type':'application/json'}
+
+
 # Retrieve all users
 @app.route("/users", methods=["GET"])
 def get_all_users():
     payload = verify_jwt(request)
-    
     # missing or invalid JWT
     if payload == 401:
         return ({"Error": error[401]}, 401)
@@ -228,6 +205,7 @@ def get_user(user_id):
     
     user["id"] = user.key.id
     return (user, 200)
+
 
 # Create user avatar
 @app.route("/" + USERS + "/<int:user_id>/avatar", methods=['POST'])
@@ -353,14 +331,13 @@ def post_course():
     query = client.query(kind=USERS)    
     query.add_filter(filter=PropertyFilter('sub', '=', payload["sub"]))
     check_role = list(query.fetch())
-    
-    # JWT doesn't belong to admin
     if check_role[0]["role"] != "admin":
         return ({"Error": error[403]}, 403)
     
     content = request.get_json()
     # validate content
-    if not content_validation(content, 400):
+    course_properties = ["subject", "number", "title", "term", "instructor_id"]
+    if not len(content) == len(course_properties):
         return ({"Error": error[400]}, 400)
     
     # validate instructor id
@@ -438,7 +415,6 @@ def update_course(course_id):
     
     course_key = client.key(COURSES, course_id)
     course = client.get(key=course_key)
-    
     # JWT doesn't belong to admin or invalid course id
     if check_role[0]["role"] != "admin" or not course:
         return ({"Error": error[403]}, 403)
@@ -480,8 +456,6 @@ def delete_course(course_id):
     user_query = client.query(kind=USERS)    
     user_query.add_filter(filter=PropertyFilter('sub', '=', payload["sub"]))
     check_role = list(user_query.fetch())
-    
-    # JWT doesn't belong to admin or course doesn't exist
     if check_role[0]["role"] != "admin" or not course:
         return ({"Error": error[403]}, 403)
     
@@ -514,12 +488,10 @@ def update_enrollment(course_id):
     course_key = client.key(COURSES, course_id)
     course = client.get(key=course_key)
     
-    if check_role[0]["role"] != "admin" or not course or (check_role[0]["role"] == "instructor" 
-                                                          and course["instructor_id"] != check_role[0].key.id):
+    if not course or (check_role[0]["role"] != "admin" and course["instructor_id"] != check_role[0].key.id):
         return ({"Error": error[403]}, 403)
 
     content = request.get_json()
-
     # validate contents
     if "add" not in content or "remove" not in content:
         return ({"Error": error[409]}, 409)
@@ -531,12 +503,18 @@ def update_enrollment(course_id):
     for student in students:
         student_ids.append(student.key.id)
     
-    # non student id in request
-    for ids in content.values():
-        for id in ids:
-            if id not in student_ids:
-                return ({"Error": error[409]}, 409)
-        
+    # check for non student id in request
+    add_students, remove_students = content.values()
+    enroll_ids = add_students + remove_students
+    for id in enroll_ids:
+        if id not in student_ids:
+            return ({"Error": error[409]}, 409)
+    
+    # check for duplicate ids
+    enroll_set = set(enroll_ids)
+    if len(enroll_ids) != len(enroll_set):
+        return ({"Error": error[409]}, 409)
+    
     # action = add, remove
     for action, enroll_ids in content.items():
         for id in enroll_ids:
@@ -548,9 +526,6 @@ def update_enrollment(course_id):
             
             # duplicate ids between Add and Remove
             if action == "add":
-                if id in content["remove"]:
-                    return ({"Error": error[409]}, 409)
-                # create new enrollment if not exists
                 if not current_enrollment:
                     new_enrollment = datastore.Entity(key=client.key(ENROLLMENTS))
                     new_enrollment.update({"course_id": course_id, "student_id": id})
